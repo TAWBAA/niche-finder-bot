@@ -1,15 +1,14 @@
 import os
 import time
 import json
-import random
 import requests
 from openai import OpenAI
 
-# ==============================
-# Variables
-# ==============================
+# =============================
+# ENV VARIABLES
+# =============================
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -17,9 +16,10 @@ client = OpenAI(api_key=OPENAI_KEY)
 
 SEEN_FILE = "seen_niches.json"
 
-# ==============================
-# Load seen niches
-# ==============================
+
+# =============================
+# LOAD SEEN NICHES
+# =============================
 
 def load_seen():
     if os.path.exists(SEEN_FILE):
@@ -27,17 +27,19 @@ def load_seen():
             return set(json.load(f))
     return set()
 
+
 def save_seen(seen):
     with open(SEEN_FILE, "w") as f:
         json.dump(list(seen), f)
 
-# ==============================
-# Telegram sender
-# ==============================
+
+# =============================
+# TELEGRAM
+# =============================
 
 def send_telegram(message):
 
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     payload = {
         "chat_id": CHAT_ID,
@@ -45,42 +47,44 @@ def send_telegram(message):
     }
 
     r = requests.post(url, data=payload)
-    print("TELEGRAM STATUS:", r.status_code)
-    print("TELEGRAM RESPONSE:", r.text)
 
-# ==============================
-# AI niche generator
-# ==============================
+    print("TELEGRAM STATUS:", r.status_code)
+
+
+# =============================
+# AI NICHE GENERATION
+# =============================
 
 def generate_niches():
 
     prompt = """
-Give me 20 ecommerce niches inspired from:
+Generate 20 ecommerce niches inspired by:
 
-- Amazon trends
-- TikTok viral products
-- Reddit communities
-- Google trends
-
-Each niche must contain:
-
-niche
-subniche
-problem
-audience
+Amazon trends
+TikTok viral products
+Reddit communities
+Google trends
 
 Return JSON only.
 
-Example:
+Format:
 
 [
 {
-"niche":"Pet Products",
-"subniche":"Interactive Cat Toys",
-"problem":"cats get bored indoors",
-"audience":"cat owners"
+"niche":"",
+"subniche":"",
+"problem":"",
+"audience":"",
+"algeria_success":"",
+"algeria_audience":""
 }
 ]
+
+Rules:
+
+- algeria_success = percentage probability niche works in Algeria
+- algeria_audience = percentage size of audience in Algeria
+- percentages between 50 and 95
 """
 
     response = client.chat.completions.create(
@@ -94,18 +98,19 @@ Example:
     try:
         data = json.loads(text)
     except:
-        print("JSON error")
+        print("JSON ERROR")
         return []
 
     return data
 
-# ==============================
-# Main loop
-# ==============================
+
+# =============================
+# RUN
+# =============================
 
 def run():
 
-    print("🚀 Niche Finder Pro Started")
+    print("🚀 Niche Finder Started")
 
     seen = load_seen()
 
@@ -119,6 +124,8 @@ def run():
         subniche = n["subniche"]
         problem = n["problem"]
         audience = n["audience"]
+        algeria_success = n["algeria_success"]
+        algeria_audience = n["algeria_audience"]
 
         key = niche + subniche
 
@@ -126,7 +133,7 @@ def run():
             continue
 
         message = f"""
-🔥 Niche #{i}
+🔥 Niche #{i+1}
 
 📦 النيش
 {niche}
@@ -139,6 +146,12 @@ def run():
 
 🎯 الجمهور
 {audience}
+
+🇩🇿 نسبة نجاح النيش في الجزائر
+{algeria_success}%
+
+👥 نسبة وجود الجمهور في الجزائر
+{algeria_audience}%
 
 ━━━━━━━━━━━━
 """
@@ -154,21 +167,19 @@ def run():
 
     save_seen(seen)
 
-    print("✅ Telegram sent count:", sent)
+    print("Sent:", sent)
 
 
-# ==============================
+# =============================
 # LOOP
-# ==============================
+# =============================
 
 while True:
 
     try:
-
         run()
 
     except Exception as e:
-
         print("ERROR:", e)
 
     time.sleep(3600)
