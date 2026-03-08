@@ -1,7 +1,7 @@
 import os
+import re
 import json
 import time
-import re
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -23,7 +23,10 @@ def load_seen():
     if not os.path.exists(SEEN_FILE):
         return []
     with open(SEEN_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except Exception:
+            return []
 
 
 def save_seen(data):
@@ -33,10 +36,13 @@ def save_seen(data):
 
 def send_telegram(message: str):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, json={
-        "chat_id": CHAT_ID,
-        "text": message[:4000]
-    })
+    try:
+        requests.post(url, json={
+            "chat_id": CHAT_ID,
+            "text": message[:4000]
+        }, timeout=20)
+    except Exception:
+        pass
 
 
 def normalize_text(text: str) -> str:
@@ -67,75 +73,81 @@ def extract_text_items_from_html(html, selectors):
     items = []
     if not html:
         return items
+
     soup = BeautifulSoup(html, "html.parser")
 
     for selector in selectors:
         for el in soup.select(selector):
             txt = el.get_text(" ", strip=True)
-            if txt and len(txt) > 3 and txt not in items:
+            txt = re.sub(r"\s+", " ", txt).strip()
+            if txt and len(txt) > 3 and len(txt) < 120 and txt not in items:
                 items.append(txt)
 
     return items
 
 
+# =========================
+# SOURCES
+# =========================
+
 def get_amazon_signals():
     headers = {"User-Agent": "Mozilla/5.0"}
     html = safe_get("https://www.amazon.com/Best-Sellers/zgbs", headers=headers)
-    return extract_text_items_from_html(html, ["a", "span"])[:40]
+    return extract_text_items_from_html(html, ["a", "span"])[:50]
 
 
 def get_alibaba_signals():
     headers = {"User-Agent": "Mozilla/5.0"}
     html = safe_get("https://www.alibaba.com/", headers=headers)
-    return extract_text_items_from_html(html, ["a", "span"])[:40]
+    return extract_text_items_from_html(html, ["a", "span"])[:50]
 
 
 def get_aliexpress_signals():
     headers = {"User-Agent": "Mozilla/5.0"}
     html = safe_get("https://www.aliexpress.com/", headers=headers)
-    return extract_text_items_from_html(html, ["a", "span"])[:40]
+    return extract_text_items_from_html(html, ["a", "span"])[:50]
 
 
 def get_temu_signals():
     headers = {"User-Agent": "Mozilla/5.0"}
     html = safe_get("https://www.temu.com/", headers=headers)
-    return extract_text_items_from_html(html, ["a", "span"])[:40]
+    return extract_text_items_from_html(html, ["a", "span"])[:50]
 
 
 def get_1688_signals():
     headers = {"User-Agent": "Mozilla/5.0"}
     html = safe_get("https://www.1688.com/", headers=headers)
-    return extract_text_items_from_html(html, ["a", "span"])[:40]
+    return extract_text_items_from_html(html, ["a", "span"])[:50]
 
 
 def get_wildberries_signals():
     headers = {"User-Agent": "Mozilla/5.0"}
     html = safe_get("https://www.wildberries.ru/", headers=headers)
-    return extract_text_items_from_html(html, ["a", "span"])[:40]
+    return extract_text_items_from_html(html, ["a", "span"])[:50]
 
 
 def get_google_trends_signals():
     headers = {"User-Agent": "Mozilla/5.0"}
     html = safe_get("https://trends.google.com/trends/trendingsearches/daily?geo=US", headers=headers)
-    return extract_text_items_from_html(html, ["a", "span"])[:30]
+    return extract_text_items_from_html(html, ["a", "span"])[:40]
 
 
 def get_reddit_signals():
     headers = {"User-Agent": "Mozilla/5.0"}
     html = safe_get("https://www.reddit.com/r/Entrepreneur/top/?t=day", headers=headers)
-    return extract_text_items_from_html(html, ["h3", "a"])[:30]
+    return extract_text_items_from_html(html, ["h3", "a"])[:40]
 
 
 def get_pinterest_signals():
     headers = {"User-Agent": "Mozilla/5.0"}
     html = safe_get("https://www.pinterest.com/", headers=headers)
-    return extract_text_items_from_html(html, ["a", "span"])[:30]
+    return extract_text_items_from_html(html, ["a", "span"])[:40]
 
 
 def get_producthunt_signals():
     headers = {"User-Agent": "Mozilla/5.0"}
     html = safe_get("https://www.producthunt.com/", headers=headers)
-    return extract_text_items_from_html(html, ["a", "span"])[:30]
+    return extract_text_items_from_html(html, ["a", "span"])[:40]
 
 
 def collect_signals():
@@ -156,29 +168,28 @@ def collect_signals():
 
     for fn in sources:
         try:
-            signals.extend(fn())
+            data = fn()
+            if data:
+                signals.extend(data)
         except Exception:
             pass
 
-    # تنظيف أولي
     cleaned = []
     for s in signals:
-        s = re.sub(r"\s+", " ", s).strip()
+        s = normalize_text(s)
         if len(s) < 4:
-            continue
-        if len(s) > 120:
             continue
         if s not in cleaned:
             cleaned.append(s)
 
-    return cleaned[:200]
+    return cleaned[:250]
 
 
 def generate_niches_from_signals(signals, existing_signatures):
     prompt = f"""
 أنت خبير اكتشاف niches في ecommerce.
 
-لديك إشارات حقيقية من عدة مصادر:
+لديك إشارات حقيقية مأخوذة من:
 Amazon
 Alibaba
 AliExpress
@@ -193,23 +204,22 @@ Product Hunt
 هذه الإشارات:
 {signals}
 
-وهذه النيشات/السوب نيشات الممنوعة لأنها استعملت سابقًا:
+هذه التواقيع ممنوعة لأنها استعملت سابقًا:
 {existing_signatures}
 
 المطلوب:
 - استخرج 10 niches جديدة فقط
 - لكل niche أعطني sub-niche
-- أعطني المشكلة التي تحلها
-- أعطني الجمهور المستهدف
+- أعطني المشكلة
+- أعطني الجمهور
 - لا تكتب روابط
 - لا تكتب فقرات
-- لا تكتب شرحًا طويلًا
 - الجمل قصيرة جدًا
 - لا تكرر نفس المعنى بصياغة مختلفة
-- ركز على niches مناسبة للتجارة الإلكترونية
-- ركز على niches قابلة للعمل في السوق العربي أو الجزائري
+- ركز على niches صالحة للتجارة الإلكترونية
+- ركز على niches قابلة للبيع في السوق العربي أو الجزائري
 
-أعد النتيجة بصيغة JSON فقط بهذا الشكل:
+أعد النتيجة بصيغة JSON فقط:
 [
   {{
     "niche": "اسم النيش",
@@ -245,7 +255,7 @@ def format_niche_message(index: int, item: dict) -> str:
     audience = item.get("audience", "غير محدد").strip()
 
     return (
-        f"🔥 نيش جديدة #{index}\n\n"
+        f"🔥 نيش #{index}\n\n"
         f"النيش: {niche}\n"
         f"السوب نيش: {subniche}\n"
         f"المشكلة: {problem}\n"
@@ -276,8 +286,10 @@ def niche_loop():
                 continue
 
             signature = make_signature(item)
+            if not signature:
+                continue
 
-            if not signature or signature in existing_signatures:
+            if signature in existing_signatures:
                 continue
 
             item["signature"] = signature
