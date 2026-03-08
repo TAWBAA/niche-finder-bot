@@ -2,7 +2,6 @@ import os
 import re
 import json
 import time
-import random
 import requests
 from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
@@ -19,6 +18,7 @@ client = OpenAI(api_key=OPENAI_KEY)
 
 SEEN_FILE = "seen_niches.json"
 SLEEP_SECONDS = 3600
+TARGET_NICHES_PER_CYCLE = 3
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -33,9 +33,17 @@ HEADERS = {
 def load_seen():
     if not os.path.exists(SEEN_FILE):
         return []
+
     try:
         with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+
+        cleaned = []
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    cleaned.append(item)
+        return cleaned
     except Exception:
         return []
 
@@ -71,7 +79,7 @@ def send_telegram(message: str):
 # =========================
 
 def normalize_text(text: str) -> str:
-    text = text.strip().lower()
+    text = (text or "").strip().lower()
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"[^\w\s\-]", "", text)
     return text
@@ -96,24 +104,25 @@ def is_duplicate_or_too_similar(item: dict, existing_items: list) -> bool:
     current_micro = item.get("microniche", "")
 
     current_combo = f"{current_niche} | {current_sub} | {current_micro}"
+    current_ns = f"{current_niche} | {current_sub}"
 
     for old in existing_items:
+        if not isinstance(old, dict):
+            continue
+
         old_niche = old.get("niche", "")
         old_sub = old.get("subniche", "")
         old_micro = old.get("microniche", "")
-        old_combo = f"{old_niche} | {old_sub} | {old_micro}"
 
-        # تطابق حرفي
+        old_combo = f"{old_niche} | {old_sub} | {old_micro}"
+        old_ns = f"{old_niche} | {old_sub}"
+
         if normalize_text(current_combo) == normalize_text(old_combo):
             return True
 
-        # تشابه عالٍ
         if text_similarity(current_combo, old_combo) >= 0.86:
             return True
 
-        # تشابه niche + subniche
-        current_ns = f"{current_niche} | {current_sub}"
-        old_ns = f"{old_niche} | {old_sub}"
         if text_similarity(current_ns, old_ns) >= 0.90:
             return True
 
@@ -147,12 +156,27 @@ def extract_text_items_from_html(html, selectors):
     soup = BeautifulSoup(html, "html.parser")
     items = []
 
+    bad_words = [
+        "sign in", "privacy", "terms", "cookie", "cookies", "help", "download",
+        "open app", "log in", "login", "account", "about", "careers", "policy",
+        "home home", "for business", "tiktok for business", "facebook", "meta",
+        "trending now", "send feedback", "query_stats"
+    ]
+
     for selector in selectors:
         try:
             for el in soup.select(selector):
                 txt = el.get_text(" ", strip=True)
                 txt = re.sub(r"\s+", " ", txt).strip()
-                if 4 <= len(txt) <= 100 and txt not in items:
+
+                if not (4 <= len(txt) <= 100):
+                    continue
+
+                low = normalize_text(txt)
+                if any(b in low for b in bad_words):
+                    continue
+
+                if txt not in items:
                     items.append(txt)
         except Exception:
             continue
@@ -179,14 +203,14 @@ def extract_json_block(text: str):
 
 
 # =========================
-# MARKET DATA SOURCES
+# MARKET SOURCES
 # =========================
 
 def get_reddit_signals():
     urls = [
-        "https://www.reddit.com/r/Entrepreneur/top.json?t=day&limit=25",
-        "https://www.reddit.com/r/smallbusiness/top.json?t=day&limit=25",
-        "https://www.reddit.com/r/AmazonFBA/top.json?t=day&limit=25",
+        "https://www.reddit.com/r/Entrepreneur/top.json?t=day&limit=20",
+        "https://www.reddit.com/r/smallbusiness/top.json?t=day&limit=20",
+        "https://www.reddit.com/r/AmazonFBA/top.json?t=day&limit=20",
     ]
 
     results = []
@@ -195,6 +219,7 @@ def get_reddit_signals():
         data = safe_get_json(url)
         if not data:
             continue
+
         try:
             posts = data["data"]["children"]
             for p in posts:
@@ -204,64 +229,81 @@ def get_reddit_signals():
         except Exception:
             continue
 
-    return results[:60]
+    return results[:50]
 
 
 def get_google_trends_signals():
     html = safe_get("https://trends.google.com/trending?geo=US&hl=en")
-    return extract_text_items_from_html(html, ["a", "span", "div"])[:40]
+    return extract_text_items_from_html(html, ["a", "span", "div"])[:30]
 
 
 def get_amazon_signals():
     html = safe_get("https://www.amazon.com/Best-Sellers/zgbs")
-    return extract_text_items_from_html(html, ["a", "span"])[:50]
+    return extract_text_items_from_html(html, ["a", "span"])[:40]
 
 
 def get_pinterest_signals():
     html = safe_get("https://www.pinterest.com/")
-    return extract_text_items_from_html(html, ["a", "span"])[:40]
+    return extract_text_items_from_html(html, ["a", "span"])[:30]
+
+
+def get_tiktok_signals():
+    html = safe_get("https://ads.tiktok.com/business/creativecenter/inspiration/topads/pc/en")
+    return extract_text_items_from_html(html, ["a", "span", "h1", "h2", "h3"])[:35]
+
+
+def get_meta_ads_signals():
+    html = safe_get("https://www.facebook.com/ads/library/")
+    return extract_text_items_from_html(html, ["a", "span", "div"])[:25]
 
 
 def get_fallback_signals():
     return [
-        "home organization",
         "kitchen storage",
-        "pet accessories",
-        "car cleaning tools",
-        "beauty tools",
-        "fitness accessories",
-        "portable travel tools",
-        "desk organization",
-        "sleep improvement",
-        "anxiety relief tools",
         "fridge organizers",
-        "shoe storage",
-        "laundry organization",
-        "bathroom organizers",
-        "phone accessories",
-        "minimalist home decor",
+        "car cleaning tools",
+        "pet accessories",
+        "desk organization",
         "portable workout gear",
-        "ergonomic office tools",
-        "cable organizers",
+        "anxiety relief tools",
+        "smart home accessories",
+        "bathroom organizers",
+        "shoe storage",
         "self care products",
+        "makeup storage",
+        "cable organizers",
+        "small space storage",
+        "portable travel tools",
+        "home gardening tools",
+        "cat cleaning tools",
+        "dog hydration accessories",
+        "sleep improvement gadgets",
+        "ergonomic office tools",
+        "portable cleaning gadgets",
+        "space saving home tools"
     ]
 
 
 def collect_signals():
     signals = []
 
-    for fn in [
-        get_reddit_signals,
-        get_google_trends_signals,
-        get_amazon_signals,
-        get_pinterest_signals,
-    ]:
+    sources = [
+        ("reddit", get_reddit_signals),
+        ("google_trends", get_google_trends_signals),
+        ("amazon", get_amazon_signals),
+        ("pinterest", get_pinterest_signals),
+        ("tiktok_creative_center", get_tiktok_signals),
+        ("meta_ads_library", get_meta_ads_signals),
+    ]
+
+    for name, fn in sources:
         try:
             data = fn()
+            print(f"SOURCE {name}: {len(data)}")
             if data:
                 signals.extend(data)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"SOURCE ERROR {name}: {e}")
 
     cleaned = []
     for s in signals:
@@ -271,11 +313,11 @@ def collect_signals():
         if s not in cleaned:
             cleaned.append(s)
 
-    if len(cleaned) < 20:
+    if len(cleaned) < 25:
         cleaned.extend(get_fallback_signals())
 
     cleaned = list(dict.fromkeys(cleaned))
-    return cleaned[:200]
+    return cleaned[:140]
 
 
 # =========================
@@ -284,13 +326,15 @@ def collect_signals():
 
 def generate_niches_from_signals(signals, existing_signatures):
     prompt = f"""
-أنت خبير niches في ecommerce.
+أنت محلل سوق إيكومرس قوي جدًا.
 
 لديك إشارات حقيقية من:
 - Amazon
 - Reddit
 - Google Trends
 - Pinterest
+- TikTok Creative Center
+- Meta Ads Library
 
 هذه الإشارات:
 {signals}
@@ -299,23 +343,32 @@ def generate_niches_from_signals(signals, existing_signatures):
 {existing_signatures}
 
 المطلوب:
-- استخرج 15 niches جديدة فقط
+- أعطني فقط 6 niches قوية جدًا
+- لا تعطيني niches عامة وضعيفة
+- ركز على niches فيها مشكلة واضحة وفرصة بيع
 - لكل niche أعطني:
   1) niche
   2) subniche
   3) microniche
   4) problem
   5) audience
-  6) algeria_success كنسبة مئوية فقط
-  7) algeria_audience كنسبة مئوية فقط
-- microniche يجب أن يكون دقيقًا جدًا وليس عامًا
-- لا تكرر نفس المعنى بصياغة مختلفة
+  6) algeria_success
+  7) algeria_audience
+  8) signal_strength
+
+شروط:
+- microniche يجب أن يكون دقيقًا جدًا
+- signal_strength يكون أحد هذه فقط:
+  "منخفضة" أو "متوسطة" أو "مرتفعة"
+- algeria_success يكون نسبة مئوية فقط
+- algeria_audience يكون نسبة مئوية فقط
+- لا تكتب منتجات
 - لا تكتب روابط
 - لا تكتب شرحًا طويلًا
-- النيشات يجب أن تكون مناسبة للإيكومرس
-- النيشات يجب أن تكون قابلة للبيع في الجزائر
+- لا تكرر نفس المعنى بصياغة مختلفة
+- اجعلها مناسبة للبيع في الجزائر
 
-أعد النتيجة بصيغة JSON فقط بهذا الشكل:
+أعد النتيجة بصيغة JSON فقط:
 [
   {{
     "niche": "اسم النيش",
@@ -324,7 +377,8 @@ def generate_niches_from_signals(signals, existing_signatures):
     "problem": "مشكلة قصيرة",
     "audience": "جمهور قصير",
     "algeria_success": "82%",
-    "algeria_audience": "76%"
+    "algeria_audience": "76%",
+    "signal_strength": "مرتفعة"
   }}
 ]
 """
@@ -336,6 +390,7 @@ def generate_niches_from_signals(signals, existing_signatures):
                 {"role": "system", "content": "أنت خبير niches وتعيد JSON صحيح فقط."},
                 {"role": "user", "content": prompt},
             ],
+            temperature=0.6,
         )
         content = response.choices[0].message.content.strip()
         return extract_json_block(content)
@@ -345,118 +400,68 @@ def generate_niches_from_signals(signals, existing_signatures):
 
 
 def get_hardcoded_fallback_niches():
-    bank = [
+    return [
         {
             "niche": "العناية بالقطط",
             "subniche": "تنظيف صندوق الرمل",
-            "microniche": "portable cat litter cleaner",
-            "problem": "صعوبة تنظيف صندوق الرمل بسرعة",
-            "audience": "مالكو القطط",
-            "algeria_success": "71%",
-            "algeria_audience": "64%",
+            "microniche": "portable cat litter cleaner niche",
+            "problem": "تنظيف صندوق الرمل متعب ويأخذ وقت",
+            "audience": "مالكو القطط داخل الشقق",
+            "algeria_success": "74%",
+            "algeria_audience": "63%",
+            "signal_strength": "مرتفعة",
         },
         {
             "niche": "تنظيف السيارة",
             "subniche": "تنظيف المقصورة",
-            "microniche": "mini handheld car vacuum",
-            "problem": "اتساخ السيارة من الداخل",
+            "microniche": "mini handheld car vacuum niche",
+            "problem": "تنظيف السيارة الداخلي متعب ويأخذ وقت",
             "audience": "أصحاب السيارات",
             "algeria_success": "86%",
             "algeria_audience": "90%",
+            "signal_strength": "مرتفعة",
         },
         {
             "niche": "تنظيم المطبخ",
             "subniche": "تخزين الثلاجة",
-            "microniche": "stackable fridge organizer bins",
-            "problem": "فوضى الثلاجة",
+            "microniche": "stackable fridge organizer niche",
+            "problem": "فوضى الثلاجة وضياع المساحة",
             "audience": "العائلات",
             "algeria_success": "84%",
             "algeria_audience": "88%",
-        },
-        {
-            "niche": "تنظيم المنزل",
-            "subniche": "منظمات الأدراج",
-            "microniche": "adjustable drawer divider set",
-            "problem": "فوضى الأدراج",
-            "audience": "ربات المنزل",
-            "algeria_success": "83%",
-            "algeria_audience": "87%",
+            "signal_strength": "مرتفعة",
         },
         {
             "niche": "العناية بالحيوانات",
             "subniche": "إكسسوارات الكلاب",
-            "microniche": "portable dog water bottle",
-            "problem": "صعوبة سقي الكلب خارج البيت",
+            "microniche": "portable dog water bottle niche",
+            "problem": "صعوبة سقي الكلب خارج المنزل",
             "audience": "أصحاب الكلاب",
             "algeria_success": "68%",
             "algeria_audience": "62%",
+            "signal_strength": "متوسطة",
         },
         {
             "niche": "العناية الذاتية",
-            "subniche": "الاسترخاء المنزلي",
-            "microniche": "portable neck massager",
-            "problem": "التوتر وآلام الرقبة",
+            "subniche": "أدوات الاسترخاء",
+            "microniche": "portable neck massager niche",
+            "problem": "التوتر وآلام الرقبة اليومية",
             "audience": "الرجال والنساء",
             "algeria_success": "79%",
             "algeria_audience": "85%",
-        },
-        {
-            "niche": "الرياضة المنزلية",
-            "subniche": "معدات صغيرة",
-            "microniche": "door resistance band anchor set",
-            "problem": "ضيق المساحة للتمرين",
-            "audience": "الشباب",
-            "algeria_success": "74%",
-            "algeria_audience": "78%",
+            "signal_strength": "متوسطة",
         },
         {
             "niche": "تنظيم المكتب",
             "subniche": "إدارة الأسلاك",
-            "microniche": "magnetic desk cable clip holder",
-            "problem": "تشابك الكابلات",
+            "microniche": "magnetic cable clip niche",
+            "problem": "تشابك الكابلات فوق المكتب",
             "audience": "الموظفون والطلاب",
             "algeria_success": "76%",
             "algeria_audience": "74%",
-        },
-        {
-            "niche": "العناية بالبشرة",
-            "subniche": "تنظيف الوجه",
-            "microniche": "silicone facial cleansing brush",
-            "problem": "تنظيف غير فعال للبشرة",
-            "audience": "النساء",
-            "algeria_success": "81%",
-            "algeria_audience": "87%",
-        },
-        {
-            "niche": "السفر",
-            "subniche": "تنظيم الحقائب",
-            "microniche": "compression packing cubes set",
-            "problem": "فوضى الأمتعة",
-            "audience": "المسافرون",
-            "algeria_success": "72%",
-            "algeria_audience": "70%",
-        },
-        {
-            "niche": "المطبخ الصغير",
-            "subniche": "أدوات متعددة الاستخدام",
-            "microniche": "over sink foldable drying rack",
-            "problem": "قلة المساحة في المطبخ",
-            "audience": "سكان الشقق",
-            "algeria_success": "85%",
-            "algeria_audience": "87%",
-        },
-        {
-            "niche": "الصحة النفسية",
-            "subniche": "تقليل التوتر",
-            "microniche": "guided breathing relaxation device",
-            "problem": "القلق والتوتر",
-            "audience": "الشباب",
-            "algeria_success": "73%",
-            "algeria_audience": "81%",
+            "signal_strength": "متوسطة",
         },
     ]
-    random.shuffle(bank)
-    return bank
 
 
 # =========================
@@ -471,6 +476,7 @@ def format_niche_message(index: int, item: dict) -> str:
     audience = item.get("audience", "غير محدد").strip()
     algeria_success = item.get("algeria_success", "غير محدد").strip()
     algeria_audience = item.get("algeria_audience", "غير محدد").strip()
+    signal_strength = item.get("signal_strength", "غير محدد").strip()
 
     return f"""🔥 Niche #{index}
 
@@ -495,6 +501,9 @@ def format_niche_message(index: int, item: dict) -> str:
 👥 نسبة وجود الجمهور في الجزائر
 {algeria_audience}
 
+📊 قوة الإشارة السوقية
+{signal_strength}
+
 ━━━━━━━━━━━━
 """
 
@@ -504,11 +513,16 @@ def format_niche_message(index: int, item: dict) -> str:
 # =========================
 
 def niche_loop():
-    print("🚀 Niche Finder Market Data + AI + Micro Started")
+    print("🚀 Niche Finder Strong 3 + TikTok + Meta Started")
 
     while True:
         seen = load_seen()
-        existing_signatures = [item.get("signature", "") for item in seen if isinstance(item, dict)]
+
+        existing_signatures = [
+            item.get("signature", "")
+            for item in seen
+            if isinstance(item, dict)
+        ]
 
         signals = collect_signals()
         print("SIGNALS COUNT:", len(signals))
@@ -518,6 +532,13 @@ def niche_loop():
 
         if not raw_items:
             raw_items = get_hardcoded_fallback_niches()
+
+        strength_order = {"مرتفعة": 3, "متوسطة": 2, "منخفضة": 1}
+        raw_items = sorted(
+            raw_items,
+            key=lambda x: strength_order.get(x.get("signal_strength", "منخفضة"), 1),
+            reverse=True
+        )
 
         new_items = []
 
@@ -536,15 +557,15 @@ def niche_loop():
             new_items.append(item)
             seen.append(item)
 
-            if len(new_items) >= 10:
+            if len(new_items) >= TARGET_NICHES_PER_CYCLE:
                 break
 
         if not new_items:
-            print("⚠️ لا توجد نيشات جديدة في هذه الدورة")
+            print("⚠️ لا توجد niches قوية جديدة في هذه الدورة")
         else:
             ok_count = 0
 
-            if send_telegram(f"🚀 تم العثور على {len(new_items)} نيشات جديدة"):
+            if send_telegram(f"🚀 تم العثور على {len(new_items)} niches قوية جديدة"):
                 ok_count += 1
 
             for i, item in enumerate(new_items, start=1):
