@@ -25,6 +25,10 @@ HEADERS = {
 }
 
 
+# =========================
+# STORAGE
+# =========================
+
 def load_seen():
     if not os.path.exists(SEEN_FILE):
         return []
@@ -40,17 +44,32 @@ def save_seen(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+# =========================
+# TELEGRAM
+# =========================
+
 def send_telegram(message: str):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(
+        r = requests.post(
             url,
             json={"chat_id": CHAT_ID, "text": message[:4000]},
             timeout=20,
         )
-    except Exception:
-        pass
+        print("TELEGRAM STATUS:", r.status_code)
+        print("TELEGRAM RESPONSE:", r.text[:500])
 
+        data = r.json()
+        return data.get("ok", False)
+
+    except Exception as e:
+        print("TELEGRAM ERROR:", str(e))
+        return False
+
+
+# =========================
+# UTILITIES
+# =========================
 
 def normalize_text(text: str) -> str:
     text = text.strip().lower()
@@ -200,7 +219,7 @@ def get_wildberries_signals():
 
 
 # =========================
-# FALLBACK SIGNALS
+# FALLBACKS
 # =========================
 
 def get_fallback_signals():
@@ -435,11 +454,17 @@ def niche_loop():
         if not new_items:
             print("⚠️ لا توجد نيشات جديدة في هذه الدورة")
         else:
-            send_telegram(f"🚀 تم العثور على {len(new_items)} نيشات جديدة")
+            ok_count = 0
+
+            if send_telegram(f"🚀 تم العثور على {len(new_items)} نيشات جديدة"):
+                ok_count += 1
+
             for i, item in enumerate(new_items, start=1):
-                send_telegram(format_niche_message(i, item))
+                if send_telegram(format_niche_message(i, item)):
+                    ok_count += 1
+
             save_seen(seen)
-            print(f"✅ Sent {len(new_items)} new niches")
+            print(f"✅ Telegram sent count: {ok_count}")
 
         time.sleep(SLEEP_SECONDS)
 
